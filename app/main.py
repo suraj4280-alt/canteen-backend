@@ -1,7 +1,14 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
+app=FastAPI() #backend system 
 
-app = FastAPI()
+class Item(BaseModel):
+    item_name: str
+    price: int
 
-@app.get("/")
-def home():
-    return {"message": "Backend running"}
+@app.post("/menu")
+def home(Item):
+    return{
+     
+
+    }
