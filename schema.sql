@@ -1,7 +1,7 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-DROP TABLE IF EXISTS leave_periods, feedback_tag_links, otp_requested, sessions,
+DROP TABLE IF EXISTS notification_recipients, leave_periods, feedback_tag_links, otp_requested, sessions,
     error_logs, auth_logs, hostel_settings, notifications, scans, feedback,
     feedback_tags, booking_items, bookings, booking_status, meal_menu_items,
     meal_menus, menu_items, meal_slots, staff, students, users, hostels, roles CASCADE;
@@ -120,6 +120,54 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Generates order_id as ORD-000001 format on insert (#8)
+CREATE SEQUENCE IF NOT EXISTS booking_order_id_seq START 1;
+
+CREATE OR REPLACE FUNCTION generate_booking_order_id()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.order_id IS NULL THEN
+        NEW.order_id := 'ORD-' || LPAD(nextval('booking_order_id_seq')::TEXT, 6, '0');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Decrements bookings_count when a booking row is deleted (#13)
+CREATE OR REPLACE FUNCTION update_bookings_count_on_delete()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_booked_id INTEGER;
+BEGIN
+    SELECT id INTO v_booked_id FROM booking_status WHERE status_name = 'booked';
+    IF OLD.status_id = v_booked_id THEN
+        UPDATE meal_menus SET bookings_count = GREATEST(0, bookings_count - 1) WHERE id = OLD.meal_menu_id;
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Enforces gender-hostel rule: UID contains 91 → male → H4,H5,H7; 92 → female → H3 (#14)
+CREATE OR REPLACE FUNCTION validate_student_hostel_gender()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_gender_code TEXT;
+    v_hostel_name TEXT;
+BEGIN
+    IF NEW.hostel_id IS NULL THEN RETURN NEW; END IF;
+    -- Gender code is at positions 8-9 of UID (e.g. TNU2024 0 91 00014)
+    v_gender_code := SUBSTRING(NEW.uid FROM 8 FOR 2);
+    SELECT name INTO v_hostel_name FROM hostels WHERE id = NEW.hostel_id;
+
+    IF v_gender_code = '92' AND v_hostel_name NOT IN ('H3') THEN
+        RAISE EXCEPTION 'Female students (UID code 92) can only be assigned to H3, got %', v_hostel_name;
+    ELSIF v_gender_code = '91' AND v_hostel_name NOT IN ('H4', 'H5', 'H7') THEN
+        RAISE EXCEPTION 'Male students (UID code 91) can only be assigned to H4, H5, or H7, got %', v_hostel_name;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 
 -- ─── tables ───────────────────────────────────────────────────────────────────
 
@@ -167,9 +215,11 @@ CREATE TABLE users (
     CONSTRAINT chk_email_format CHECK (
         email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
     ),
+    -- Students must use @tnu.in email; staff/admin may use other domains.
+    -- Enforced at app level for role-specific logic; DB keeps general format check.
     -- bcrypt hashes start with $2; update this constraint if you switch algorithms
     CONSTRAINT chk_password_hash CHECK (password_hash LIKE '$2%'),
-    CONSTRAINT chk_login_attempts CHECK (login_attempts BETWEEN 0 AND 5)
+    CONSTRAINT chk_login_attempts CHECK (login_attempts BETWEEN 0 AND 10)
 );
 CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
@@ -181,7 +231,6 @@ CREATE TABLE students (
     middle_name        VARCHAR(50),
     last_name          VARCHAR(50) NOT NULL,
     phone              VARCHAR(15),
-    email              VARCHAR(100),
     uid                VARCHAR(20) UNIQUE NOT NULL,
     hostel_id          INTEGER REFERENCES hostels(id),
     room_number        VARCHAR(10),
@@ -194,15 +243,14 @@ CREATE TABLE students (
     is_active          BOOLEAN   DEFAULT TRUE,
     created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    -- pattern: TNU2024069100014 — update if your UID format differs
-    CONSTRAINT chk_uid_format  CHECK (uid ~ '^[A-Z]{3}[0-9]{10,14}$'),
-    CONSTRAINT chk_room_format CHECK (room_number IS NULL OR room_number ~ '^[0-9]{1,4}[A-Z]?$'),
-    CONSTRAINT chk_student_email CHECK (
-        email IS NULL OR email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
-    )
+    -- UID must be exactly TNU + 13 digits (e.g. TNU2024069100014)
+    CONSTRAINT chk_uid_format  CHECK (uid ~ '^TNU[0-9]{13}$'),
+    CONSTRAINT chk_room_format CHECK (room_number IS NULL OR room_number ~ '^[a-zA-Z0-9\-]+$')
 );
 CREATE TRIGGER trg_students_updated_at BEFORE UPDATE ON students
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+CREATE TRIGGER trg_students_hostel_gender BEFORE INSERT OR UPDATE OF hostel_id, uid ON students
+    FOR EACH ROW EXECUTE FUNCTION validate_student_hostel_gender();
 
 CREATE TABLE staff (
     id               SERIAL PRIMARY KEY,
@@ -210,10 +258,9 @@ CREATE TABLE staff (
     first_name       VARCHAR(50) NOT NULL,
     last_name        VARCHAR(50) NOT NULL,
     phone            VARCHAR(15),
-    email            VARCHAR(100),
     designation      VARCHAR(50) CHECK (designation IN (
                          'canteen_manager','head_cook','cook',
-                         'qr_scanner','cashier','supervisor','admin')),
+                         'qr_scanner','cashier','supervisor','admin','warden')),
     hostel_id        INTEGER REFERENCES hostels(id),
     can_scan_qr      BOOLEAN DEFAULT FALSE,
     can_edit_menu    BOOLEAN DEFAULT FALSE,
@@ -227,9 +274,6 @@ CREATE TABLE staff (
     CONSTRAINT chk_shift CHECK (
         (shift_start IS NULL AND shift_end IS NULL) OR
         (shift_start IS NOT NULL AND shift_end IS NOT NULL AND shift_end > shift_start)
-    ),
-    CONSTRAINT chk_staff_email CHECK (
-        email IS NULL OR email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
     )
 );
 CREATE TRIGGER trg_staff_updated_at BEFORE UPDATE ON staff
@@ -250,7 +294,7 @@ CREATE TABLE meal_slots (
     max_bookings_per_student INTEGER DEFAULT 1,
     is_active                BOOLEAN DEFAULT TRUE,
     CONSTRAINT chk_times        CHECK (end_time > start_time),
-    CONSTRAINT chk_cutoff       CHECK (booking_cutoff_time < start_time),
+    CONSTRAINT chk_cutoff       CHECK (booking_cutoff_time < end_time),
     CONSTRAINT chk_cancel_cutoff CHECK (
         cancel_cutoff_time IS NULL OR cancel_cutoff_time <= booking_cutoff_time
     ),
@@ -326,6 +370,8 @@ CREATE TABLE meal_menu_items (
     max_selectable INTEGER DEFAULT 1,
     price_override DECIMAL(10,2),
     sort_order     INTEGER DEFAULT 0,
+    -- Items with the same exclusive_group are mutually exclusive (radio select, e.g. 'lunch_main')
+    exclusive_group VARCHAR(50),
     UNIQUE (meal_menu_id, menu_item_id)
 );
 
@@ -367,6 +413,7 @@ CREATE TABLE bookings (
     meal_slot_id         INTEGER NOT NULL REFERENCES meal_slots(id),
     meal_menu_id         INTEGER NOT NULL REFERENCES meal_menus(id),
     date                 DATE NOT NULL,
+    order_id             VARCHAR(20) UNIQUE,
     status_id            INTEGER NOT NULL REFERENCES booking_status(id),
     previous_status_id   INTEGER REFERENCES booking_status(id),
     qr_token             UUID DEFAULT uuid_generate_v4() UNIQUE,
@@ -394,8 +441,12 @@ CREATE TRIGGER trg_bookings_before_update BEFORE UPDATE ON bookings
     FOR EACH ROW EXECUTE FUNCTION bookings_before_update();
 CREATE TRIGGER trg_set_qr_expiry BEFORE INSERT OR UPDATE OF meal_slot_id, date ON bookings
     FOR EACH ROW EXECUTE FUNCTION set_booking_qr_expiry();
+CREATE TRIGGER trg_generate_order_id BEFORE INSERT ON bookings
+    FOR EACH ROW EXECUTE FUNCTION generate_booking_order_id();
 CREATE TRIGGER trg_update_bookings_count AFTER INSERT OR UPDATE OF status_id ON bookings
     FOR EACH ROW EXECUTE FUNCTION update_meal_menu_bookings_count();
+CREATE TRIGGER trg_bookings_count_on_delete AFTER DELETE ON bookings
+    FOR EACH ROW EXECUTE FUNCTION update_bookings_count_on_delete();
 CREATE TABLE booking_items (
     id                   SERIAL PRIMARY KEY,
     booking_id           INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
@@ -415,7 +466,7 @@ CREATE TABLE scans (
     scanned_by     INTEGER NOT NULL REFERENCES staff(id),
     qr_token       UUID NOT NULL,
     scanned_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    counter_id     INTEGER,
+    counter_label  VARCHAR(50),
     location       VARCHAR(50),
     status         VARCHAR(20) CHECK (status IN ('success','failed','duplicate','expired')),
     failure_reason TEXT,
@@ -440,8 +491,10 @@ CREATE TABLE feedback (
     id                  SERIAL PRIMARY KEY,
     student_id          INTEGER NOT NULL REFERENCES students(id),
     booking_id          INTEGER REFERENCES bookings(id),
-    rating              INTEGER CHECK (rating BETWEEN 1 AND 5),
-    message             TEXT,
+    food_rating         INTEGER CHECK (food_rating BETWEEN 1 AND 5),
+    service_rating      INTEGER CHECK (service_rating BETWEEN 1 AND 5),
+    cleanliness_rating  INTEGER CHECK (cleanliness_rating BETWEEN 1 AND 5),
+    comment             TEXT,
     images              TEXT[],
     is_anonymous        BOOLEAN DEFAULT FALSE,
     is_locked           BOOLEAN DEFAULT TRUE,
@@ -452,11 +505,11 @@ CREATE TABLE feedback (
     resolved_at         TIMESTAMP,
     resolution_notes    TEXT,
     is_visible          BOOLEAN DEFAULT TRUE,
-    sentiment_score     DECIMAL(3,2),
+    sentiment_score     DECIMAL(4,3),
     sentiment_label     VARCHAR(10),
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    -- when unlocked, unlocked_at must be recorded for audit trail
+    CONSTRAINT chk_sentiment_range CHECK (sentiment_score IS NULL OR sentiment_score BETWEEN -1.000 AND 1.000),
     CONSTRAINT chk_unlock_audit CHECK (is_locked = TRUE OR unlocked_at IS NOT NULL)
 );
 CREATE TRIGGER trg_feedback_updated_at BEFORE UPDATE ON feedback
@@ -496,8 +549,6 @@ CREATE TABLE notifications (
     scheduled_at   TIMESTAMP,
     is_scheduled   BOOLEAN DEFAULT FALSE,
     expiry_at      TIMESTAMP,
-    is_read        BOOLEAN DEFAULT FALSE,
-    read_at        TIMESTAMP,
     created_by     INTEGER REFERENCES users(id),
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_has_target CHECK (
@@ -505,10 +556,25 @@ CREATE TABLE notifications (
     )
 );
 
+-- Per-user read tracking for notifications (#15)
+CREATE TABLE notification_recipients (
+    id              SERIAL PRIMARY KEY,
+    notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_read         BOOLEAN DEFAULT FALSE,
+    read_at         TIMESTAMP,
+    delivered_at    TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (notification_id, user_id),
+    CONSTRAINT chk_read_audit CHECK (is_read = FALSE OR read_at IS NOT NULL)
+);
+
 CREATE TABLE hostel_settings (
     id                    SERIAL PRIMARY KEY,
     hostel_id             INTEGER UNIQUE NOT NULL REFERENCES hostels(id),
     booking_window_days   INTEGER DEFAULT 7  CHECK (booking_window_days BETWEEN 1 AND 30),
+    -- advance_booking_hour: hour of the day (0-23) by which next-day bookings must be placed.
+    -- E.g. 18 means students must book tomorrow's meals by 6 PM today.
     advance_booking_hour  INTEGER DEFAULT 18 CHECK (advance_booking_hour BETWEEN 0 AND 23),
     cancel_window_hours   INTEGER DEFAULT 1  CHECK (cancel_window_hours >= 0),
     max_skips_per_month   INTEGER DEFAULT 5,
@@ -523,6 +589,7 @@ CREATE TABLE hostel_settings (
     meal_cost             DECIMAL(10,2) DEFAULT 0.00,
     currency              VARCHAR(3) DEFAULT 'INR',
     default_notify_before INTEGER DEFAULT 30,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TRIGGER trg_hostel_settings_validate BEFORE INSERT OR UPDATE ON hostel_settings
@@ -638,14 +705,17 @@ CREATE INDEX idx_bookings_slot_date ON bookings(meal_slot_id, date);
 CREATE INDEX idx_bookings_qr_token  ON bookings(qr_token);
 CREATE INDEX idx_bookings_status    ON bookings(status_id, date);
 CREATE INDEX idx_bookings_qr_lookup ON bookings(qr_token, qr_expires_at, status_id);
+CREATE INDEX idx_bookings_order_id  ON bookings(order_id);
 
 CREATE INDEX idx_meal_menus_date      ON meal_menus(date)        WHERE date IS NOT NULL;
 CREATE INDEX idx_meal_menus_recurring ON meal_menus(day_of_week) WHERE is_recurring = TRUE;
 
-CREATE INDEX idx_notifications_user_unread ON notifications(user_id, is_read, priority, created_at DESC);
 CREATE INDEX idx_notifications_scheduled   ON notifications(is_scheduled, scheduled_at) WHERE is_scheduled = TRUE;
 CREATE INDEX idx_notifications_expiry      ON notifications(expiry_at) WHERE expiry_at IS NOT NULL;
 CREATE INDEX idx_notifications_reference   ON notifications(reference_type, reference_id);
+
+CREATE INDEX idx_notif_recipients_user   ON notification_recipients(user_id, is_read);
+CREATE INDEX idx_notif_recipients_notif  ON notification_recipients(notification_id);
 
 CREATE INDEX idx_sessions_token ON sessions(access_token_hash);
 CREATE INDEX idx_sessions_user  ON sessions(user_id) WHERE revoked = FALSE;
@@ -658,7 +728,7 @@ CREATE INDEX idx_scans_qr        ON scans(qr_token);
 CREATE INDEX idx_feedback_student  ON feedback(student_id, created_at DESC);
 CREATE INDEX idx_feedback_booking  ON feedback(booking_id) WHERE booking_id IS NOT NULL;
 CREATE INDEX idx_feedback_resolved ON feedback(is_resolved, created_at) WHERE is_resolved = FALSE;
-CREATE INDEX idx_feedback_rating   ON feedback(rating, created_at) WHERE rating <= 2;
+CREATE INDEX idx_feedback_low_food ON feedback(food_rating, created_at) WHERE food_rating <= 2;
 
 CREATE INDEX idx_leave_student ON leave_periods(student_id, start_date, end_date);
 CREATE INDEX idx_leave_active  ON leave_periods(student_id, start_date, end_date) WHERE is_approved = TRUE;
@@ -682,13 +752,14 @@ INSERT INTO booking_status (status_name, is_terminal, display_label, color_code,
     ('cancelled', TRUE,  'Cancelled', '#F44336', 'cancel',       FALSE, FALSE, 3),
     ('used',      TRUE,  'Completed', '#2196F3', 'verified',     TRUE,  FALSE, 4),
     ('absent',    TRUE,  'No Show',   '#9E9E9E', 'person_off',   FALSE, TRUE,  5),
-    ('expired',   TRUE,  'Expired',   '#795548', 'timer_off',    FALSE, FALSE, 6);
+    ('expired',   TRUE,  'Expired',   '#795548', 'timer_off',    FALSE, FALSE, 6),
+    ('skipped',   TRUE,  'Skipped',   '#607D8B', 'skip_next',    FALSE, TRUE,  7);
 
 INSERT INTO meal_slots (name, display_order, start_time, end_time, booking_cutoff_time, cancel_cutoff_time, color_code, icon_name, max_bookings_per_student) VALUES
-    ('Breakfast', 1, '07:00', '09:00', '06:30', '06:00', '#FF9800', 'free_breakfast', 1),
-    ('Lunch',     2, '12:00', '14:00', '11:30', '11:00', '#4CAF50', 'lunch_dining',   1),
-    ('Snacks',    3, '17:00', '18:00', '16:30', '16:00', '#FF5722', 'bakery_dining',  2),
-    ('Dinner',    4, '20:00', '22:00', '19:30', '19:00', '#9C27B0', 'dinner_dining',  1);
+    ('Breakfast', 1, '07:30', '10:00', '07:30', '07:00', '#FF9800', 'free_breakfast', 1),
+    ('Lunch',     2, '12:15', '14:30', '12:00', '11:30', '#4CAF50', 'lunch_dining',   1),
+    ('Snacks',    3, '16:30', '18:00', '16:30', '16:00', '#FF5722', 'bakery_dining',  2),
+    ('Dinner',    4, '19:30', '22:30', '20:00', '19:30', '#9C27B0', 'dinner_dining',  1);
 
 INSERT INTO feedback_tags (tag_name, display_label, color_code, icon_name, sort_order) VALUES
     ('food_quality',  'Food Quality',  '#E91E63', 'restaurant',        1),
