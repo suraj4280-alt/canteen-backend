@@ -753,7 +753,8 @@ INSERT INTO booking_status (status_name, is_terminal, display_label, color_code,
     ('used',      TRUE,  'Completed', '#2196F3', 'verified',     TRUE,  FALSE, 4),
     ('absent',    TRUE,  'No Show',   '#9E9E9E', 'person_off',   FALSE, TRUE,  5),
     ('expired',   TRUE,  'Expired',   '#795548', 'timer_off',    FALSE, FALSE, 6),
-    ('skipped',   TRUE,  'Skipped',   '#607D8B', 'skip_next',    FALSE, TRUE,  7);
+    ('skipped',   TRUE,  'Skipped',   '#607D8B', 'skip_next',    FALSE, TRUE,  7),
+    ('missed',    TRUE,  'Missed',    '#E91E63', 'event_busy',   FALSE, TRUE,  8);
 
 INSERT INTO meal_slots (name, display_order, start_time, end_time, booking_cutoff_time, cancel_cutoff_time, color_code, icon_name, max_bookings_per_student) VALUES
     ('Breakfast', 1, '07:30', '10:00', '07:30', '07:00', '#FF9800', 'free_breakfast', 1),

@@ -4,6 +4,7 @@ from datetime import date, datetime
 from typing import List
 from app.dependencies import get_db, get_current_student, get_current_user
 from app.schemas.meals import MealSlotResp, MealMenuResp, TodayResp
+from app.services.booking_service import find_or_create_meal_menu
 
 router = APIRouter(prefix="/api/meals", tags=["meals"])
 
@@ -14,8 +15,6 @@ async def get_slots(db: Connection = Depends(get_db), current_user: dict = Depen
 
 @router.get("/menu", response_model=MealMenuResp)
 async def get_menu(date: date, slot_id: int, db: Connection = Depends(get_db), student: dict = Depends(get_current_student)):
-    from app.services.booking_service import find_or_create_meal_menu
-    
     hostel_id = student["hostel_id"]
     if not hostel_id:
         raise HTTPException(status_code=400, detail="Student is not assigned to any hostel")
@@ -23,7 +22,7 @@ async def get_menu(date: date, slot_id: int, db: Connection = Depends(get_db), s
     menu_id = await find_or_create_meal_menu(db, hostel_id, slot_id, date)
     
     query = """
-        SELECT mi.* 
+        SELECT mi.*, mmi.exclusive_group 
         FROM menu_items mi
         JOIN meal_menu_items mmi ON mi.id = mmi.menu_item_id
         WHERE mmi.meal_menu_id = $1 AND mi.is_active = TRUE
@@ -39,6 +38,7 @@ async def get_menu(date: date, slot_id: int, db: Connection = Depends(get_db), s
 
 @router.get("/today", response_model=TodayResp)
 async def get_today(db: Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Task 8: Real countdown to next meal cutoff based on server time."""
     now = datetime.now()
     current_time = now.time()
     
@@ -47,27 +47,40 @@ async def get_today(db: Connection = Depends(get_db), current_user: dict = Depen
     current_phase = "Unknown"
     next_meal = "Unknown"
     cutoff = None
+    countdown_hours = 0
+    countdown_minutes = 0
     
+    # Check if we're currently in a meal slot
     for slot in slots:
         if slot['start_time'] <= current_time <= slot['end_time']:
             current_phase = slot['name']
             cutoff = slot['booking_cutoff_time']
             break
-            
+    
+    # If not in any slot, find the next upcoming slot
     if current_phase == "Unknown":
         for slot in slots:
             if current_time < slot['start_time']:
                 next_meal = slot['name']
                 cutoff = slot['booking_cutoff_time']
                 break
-                
+    
+    # Calculate countdown to cutoff
+    if cutoff:
+        cutoff_dt = datetime.combine(now.date(), cutoff)
+        if cutoff_dt > now:
+            diff = cutoff_dt - now
+            total_minutes = int(diff.total_seconds() // 60)
+            countdown_hours = total_minutes // 60
+            countdown_minutes = total_minutes % 60
+    
     if not cutoff and slots:
         cutoff = slots[0]['booking_cutoff_time']
-            
+        
     return {
         "current_phase": current_phase,
         "next_meal": next_meal,
         "cutoff_time": cutoff or current_time,
-        "countdown_hours": 0,  # TODO: implement actual countdown logic
-        "countdown_minutes": 0 # TODO: implement actual countdown logic
+        "countdown_hours": countdown_hours,
+        "countdown_minutes": countdown_minutes,
     }

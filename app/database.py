@@ -1,5 +1,8 @@
 import asyncpg
 from app.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 pool = None
 
@@ -15,13 +18,13 @@ async def connect_db():
             min_size=1,
             max_size=10
         )
-        print("Successfully connected to the database and created pool.")
+        logger.info("Successfully connected to the database and created pool.")
     except Exception as e:
-        print(f"Failed to connect to the database: {e}")
+        logger.error(f"Failed to connect to the database: {e}")
         raise e
 
 async def close_db():
     global pool
     if pool is not None:
         await pool.close()
-        print("Database connection pool closed.")
+        logger.info("Database connection pool closed.")

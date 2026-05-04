@@ -15,9 +15,9 @@ class MealSlotResp(BaseModel):
 class MenuItemResp(BaseModel):
     id: int
     name: str
-    description: Optional[str]
-    is_veg: bool
-    exclusive_group: Optional[str]
+    description: Optional[str] = None
+    type: str
+    exclusive_group: Optional[str] = None
 
 class MealMenuResp(BaseModel):
     id: int

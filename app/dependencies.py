@@ -30,7 +30,20 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Connection =
         raise HTTPException(status_code=401, detail="Token has expired", headers={"WWW-Authenticate": "Bearer"})
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token", headers={"WWW-Authenticate": "Bearer"})
-        
+    
+    # Validate session is not revoked
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    session = await db.fetchrow(
+        "SELECT id FROM sessions WHERE access_token_hash = $1 AND revoked = FALSE",
+        token_hash
+    )
+    if not session:
+        raise HTTPException(status_code=401, detail="Session revoked or invalid", headers={"WWW-Authenticate": "Bearer"})
+    
+    # Update last_used_at for session tracking
+    await db.execute("UPDATE sessions SET last_used_at = NOW() WHERE id = $1", session["id"])
+    
     user = await db.fetchrow(
         """
         SELECT u.id, u.is_active, r.role_name 
