@@ -4,10 +4,23 @@ import re
 class RegisterRequest(BaseModel):
     first_name: str = Field(..., min_length=2, max_length=50)
     last_name: str = Field(..., min_length=2, max_length=50)
+    middle_name: str | None = Field(None, max_length=50)
     email: str
     uid: str
     hostel: str
     password: str
+    phone: str | None = Field(None, max_length=15)
+    room_number: str | None = Field(None, max_length=10)
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        cleaned = v.strip()
+        if not re.match(r"^[0-9]{10,15}$", cleaned):
+            raise ValueError("Phone must be 10-15 digits")
+        return cleaned
 
     @field_validator('email')
     @classmethod

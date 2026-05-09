@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from asyncpg import Connection
 from datetime import date, datetime
 from typing import List
-from app.dependencies import get_db, get_current_student, get_current_user
+from app.dependencies import get_db, get_current_student, get_current_user, require_staff
 from app.schemas.meals import MealSlotResp, MealMenuResp, TodayResp
 from app.services.booking_service import find_or_create_meal_menu
 
@@ -84,3 +84,51 @@ async def get_today(db: Connection = Depends(get_db), current_user: dict = Depen
         "countdown_hours": countdown_hours,
         "countdown_minutes": countdown_minutes,
     }
+
+@router.get("/today/stats")
+async def get_today_stats(db: Connection = Depends(get_db), staff: dict = Depends(require_staff)):
+    """Staff-only: Get today's booking and scan counts per meal slot."""
+    today = date.today()
+    now_time = datetime.now().time()
+    
+    slots = await db.fetch("SELECT * FROM meal_slots WHERE is_active = TRUE ORDER BY display_order")
+    
+    result = []
+    for slot in slots:
+        # Count total bookings for this slot today (only active/booked + used)
+        total_booked = await db.fetchval("""
+            SELECT COUNT(*) FROM bookings b
+            JOIN booking_status bs ON b.status_id = bs.id
+            WHERE b.meal_slot_id = $1 AND b.date = $2
+              AND bs.status_name IN ('booked', 'used')
+        """, slot['id'], today)
+        
+        # Count scanned/used bookings
+        total_scanned = await db.fetchval("""
+            SELECT COUNT(*) FROM bookings b
+            JOIN booking_status bs ON b.status_id = bs.id
+            WHERE b.meal_slot_id = $1 AND b.date = $2
+              AND bs.status_name = 'used'
+        """, slot['id'], today)
+        
+        # Determine slot status
+        if now_time > slot['end_time']:
+            status = "past"
+        elif now_time >= slot['start_time']:
+            status = "active"
+        else:
+            status = "upcoming"
+        
+        result.append({
+            "slot_id": slot['id'],
+            "slot_name": slot['name'],
+            "start_time": slot['start_time'].strftime('%I:%M %p'),
+            "end_time": slot['end_time'].strftime('%I:%M %p'),
+            "total_booked": total_booked or 0,
+            "total_scanned": total_scanned or 0,
+            "remaining": (total_booked or 0) - (total_scanned or 0),
+            "status": status,
+            "color_code": slot.get('color_code', '#4CAF50'),
+        })
+    
+    return {"date": str(today), "slots": result}

@@ -8,7 +8,7 @@ class BookingReq(BaseModel):
     item_ids: List[int] = Field(..., min_length=1)
 
 class SkipReq(BaseModel):
-    reason: str = Field(..., min_length=2)
+    reason: str = Field(..., min_length=2, max_length=500)
 
 class BookingResp(BaseModel):
     id: int
@@ -28,6 +28,7 @@ class BookingHistoryResp(BookingResp):
     status_name: Optional[str] = None
     status_label: Optional[str] = None
     skip_reason: Optional[str] = None
+    skip_reason_category: Optional[str] = None
     meal_menu_id: Optional[int] = None
 
 class MsgResp(BaseModel):

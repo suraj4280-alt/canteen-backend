@@ -7,7 +7,7 @@ class FeedbackReq(BaseModel):
     food_rating: int = Field(..., ge=1, le=5)
     service_rating: int = Field(..., ge=1, le=5)
     cleanliness_rating: int = Field(..., ge=1, le=5)
-    comment: Optional[str] = None
+    comment: Optional[str] = Field(None, max_length=2000)
     tag_ids: Optional[List[int]] = None
 
 class FeedbackResp(BaseModel):

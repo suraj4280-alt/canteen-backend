@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from asyncpg import Connection
 from jose import jwt, JWTError, ExpiredSignatureError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from app.dependencies import get_db, get_current_user, get_current_student
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, RefreshRequest
@@ -19,6 +19,28 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class ProfileUpdateReq(BaseModel):
     phone: Optional[str] = Field(None, max_length=15)
     room_number: Optional[str] = Field(None, max_length=10)
+    dietary_preference: Optional[str] = Field(None, max_length=20)
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        import re
+        cleaned = v.strip()
+        if not re.match(r"^[0-9]{10,15}$", cleaned):
+            raise ValueError("Phone must be 10-15 digits")
+        return cleaned
+
+    @field_validator('dietary_preference')
+    @classmethod
+    def validate_dietary(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        allowed = ('veg', 'non-veg', 'vegan', 'jain')
+        if v not in allowed:
+            raise ValueError(f"dietary_preference must be one of: {', '.join(allowed)}")
+        return v
 
 # ── Helper: Task 14 — Auth logging ──────────────────────────────────────────
 async def _log_auth(db: Connection, user_id: int | None, action: str, success: bool, request: Request, failure_reason: str = None, session_id: int = None):
@@ -55,7 +77,8 @@ async def _create_session(db: Connection, user_id: int, access_token: str, refre
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(request: RegisterRequest, db: Connection = Depends(get_db)):
+@limiter.limit("3/minute")
+async def register(request: RegisterRequest, req: Request, db: Connection = Depends(get_db)):
     # 1. Check if email exists
     existing_user = await db.fetchrow("SELECT id FROM users WHERE email = $1", request.email)
     if existing_user:
@@ -89,10 +112,10 @@ async def register(request: RegisterRequest, db: Connection = Depends(get_db)):
         
         await db.execute(
             """
-            INSERT INTO students (user_id, first_name, last_name, uid, hostel_id) 
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO students (user_id, first_name, middle_name, last_name, uid, hostel_id, phone, room_number) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
-            user_id, request.first_name, request.last_name, request.uid, hostel_id
+            user_id, request.first_name, request.middle_name, request.last_name, request.uid, hostel_id, request.phone, request.room_number
         )
 
     return {"message": "User registered successfully"}
@@ -337,6 +360,11 @@ async def update_profile(request: ProfileUpdateReq, current_user: dict = Depends
     if request.room_number is not None:
         updates.append(f"room_number = ${param_idx}")
         params.append(request.room_number)
+        param_idx += 1
+    
+    if request.dietary_preference is not None:
+        updates.append(f"dietary_preference = ${param_idx}")
+        params.append(request.dietary_preference)
         param_idx += 1
     
     if not updates:
