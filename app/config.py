@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     DB_NAME: str = "canteen_db"
     DB_USER: str = "postgres"
     DB_PASSWORD: str = "postgres"
+    DB_URL: str = ""
     
     SECRET_KEY: str = "secret"
     ALGORITHM: str = "HS256"

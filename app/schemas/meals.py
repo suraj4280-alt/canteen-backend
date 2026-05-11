@@ -19,6 +19,7 @@ class MenuItemResp(BaseModel):
     name: str
     description: Optional[str] = None
     type: str
+    image_url: Optional[str] = None
     exclusive_group: Optional[str] = None
 
 class MealMenuResp(BaseModel):
