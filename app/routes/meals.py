@@ -38,7 +38,7 @@ async def get_menu(date: date, slot_id: int, db: Connection = Depends(get_db), s
 
 @router.get("/today", response_model=TodayResp)
 async def get_today(db: Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    """Task 8: Real countdown to next meal cutoff based on server time."""
+    """Return current meal phase and next booking window info."""
     now = datetime.now()
     current_time = now.time()
     
@@ -54,7 +54,6 @@ async def get_today(db: Connection = Depends(get_db), current_user: dict = Depen
     for slot in slots:
         if slot['start_time'] <= current_time <= slot['end_time']:
             current_phase = slot['name']
-            cutoff = slot['booking_cutoff_time']
             break
     
     # If not in any slot, find the next upcoming slot
@@ -62,7 +61,31 @@ async def get_today(db: Connection = Depends(get_db), current_user: dict = Depen
         for slot in slots:
             if current_time < slot['start_time']:
                 next_meal = slot['name']
-                cutoff = slot['booking_cutoff_time']
+                break
+    
+    # Find the next booking window that is currently open or about to open
+    from datetime import timedelta
+    today = now.date()
+    
+    for slot in slots:
+        open_time = slot.get('booking_open_time')
+        close_time = slot['booking_cutoff_time']
+        day_offset = slot.get('booking_open_day_offset', 0) or 0
+        
+        if open_time is None:
+            continue
+        
+        # For same-day slots (offset=0): window is today between open_time and close_time
+        # For prev-day slots (offset=-1): the window for TOMORROW's meal is today
+        if day_offset == 0:
+            # This window is for today's meal
+            if current_time < close_time:
+                cutoff = close_time
+                break
+        else:
+            # offset = -1: window today is for TOMORROW's meal
+            if current_time < close_time:
+                cutoff = close_time
                 break
     
     # Calculate countdown to cutoff

@@ -15,11 +15,17 @@ from app.routes.feedback import router as feedback_router
 from app.routes.tokens import router as tokens_router
 from app.routes.notifications import router as notifications_router
 from app.routes.leave import router as leave_router
+from app.routes.admin import router as admin_router
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from fastapi.staticfiles import StaticFiles
+import os
 
 logger = logging.getLogger(__name__)
+
+# Ensure uploads directory exists
+os.makedirs("uploads", exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,6 +36,8 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 app = FastAPI(title="Canteen Backend API", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="uploads"), name="static")
+
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -81,6 +89,7 @@ app.include_router(feedback_router)
 app.include_router(tokens_router)
 app.include_router(notifications_router)
 app.include_router(leave_router)
+app.include_router(admin_router)
 
 @app.get("/")
 async def root():

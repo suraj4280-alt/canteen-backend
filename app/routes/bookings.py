@@ -6,7 +6,7 @@ from datetime import datetime, date as date_type
 from app.schemas.bookings import BookingReq, SkipReq, BookingResp, MsgResp, QRResp, PaginatedBookingsResp, UpcomingBookingResp
 from app.services.booking_service import (
     is_cutoff_passed, is_cancel_cutoff_passed, validate_menu_items,
-    find_or_create_meal_menu, check_duplicate_booking
+    find_or_create_meal_menu, check_duplicate_booking, check_booking_window
 )
 
 router = APIRouter(prefix="/api/bookings", tags=["bookings"])
@@ -120,8 +120,9 @@ async def get_booking_status(date: date_type, db: Connection = Depends(get_db), 
 async def create_booking(request: BookingReq, db: Connection = Depends(get_db), student: dict = Depends(get_current_student)):
     student_id = student["student_id"]
     
-    if await is_cutoff_passed(db, request.date, request.slot_id):
-        raise HTTPException(status_code=400, detail="Booking cutoff time has passed")
+    window = await check_booking_window(db, request.date, request.slot_id)
+    if not window["allowed"]:
+        raise HTTPException(status_code=400, detail=window["reason"])
         
     await check_duplicate_booking(db, student_id, request.slot_id, request.date)
     

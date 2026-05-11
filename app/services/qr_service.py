@@ -53,10 +53,10 @@ async def process_scan(db: Connection, qr_payload: str, scanned_by: int) -> dict
     if booking['status_name'] == 'used':
         # Find the scan time
         scan_record = await db.fetchrow(
-            "SELECT created_at FROM scans WHERE booking_id = $1 AND status = 'success' ORDER BY created_at DESC LIMIT 1",
+            "SELECT scanned_at FROM scans WHERE booking_id = $1 AND status = 'success' ORDER BY scanned_at DESC LIMIT 1",
             booking['id']
         )
-        scanned_at = scan_record['created_at'].strftime('%I:%M %p') if scan_record else 'earlier'
+        scanned_at = scan_record['scanned_at'].strftime('%I:%M %p') if scan_record else 'earlier'
         return {
             "success": False,
             "reason": "already_scanned",

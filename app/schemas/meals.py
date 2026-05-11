@@ -8,7 +8,9 @@ class MealSlotResp(BaseModel):
     start_time: time
     end_time: time
     booking_cutoff_time: time
-    cancel_cutoff_time: Optional[time]
+    booking_open_time: Optional[time] = None
+    booking_open_day_offset: Optional[int] = 0
+    cancel_cutoff_time: Optional[time] = None
     color_code: str
     icon_name: str
 
