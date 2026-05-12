@@ -11,7 +11,7 @@ import aiofiles
 import uuid
 import os
 from typing import Optional
-from datetime import date, datetime
+from datetime import date, datetime, time
 from app.dependencies import get_db, get_current_user
 from app.services.auth_service import hash_password
 
@@ -81,6 +81,19 @@ class StaffUpdate(BaseModel):
     phone: Optional[str] = Field(None, max_length=15)
     designation: Optional[str] = None
     hostel_id: Optional[int] = None
+
+class BookingSettingsUpdate(BaseModel):
+    booking_open_time: time
+    booking_cutoff_time: time
+
+    @field_validator('booking_cutoff_time')
+    @classmethod
+    def validate_times(cls, v: time, info) -> time:
+        if 'booking_open_time' in info.data:
+            open_time = info.data['booking_open_time']
+            if open_time >= v:
+                raise ValueError("Cutoff time must be after open time")
+        return v
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -188,6 +201,63 @@ async def get_admin_stats(
         "skips_today": skips_today or 0,
         "per_slot": per_slot,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BOOKING SETTINGS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/booking-settings")
+async def get_booking_settings(
+    admin: dict = Depends(require_admin),
+    db: Connection = Depends(get_db),
+):
+    """Returns current global booking window settings."""
+    row = await db.fetchrow("SELECT booking_open_time, booking_cutoff_time FROM hostel_settings LIMIT 1")
+    if not row:
+        return {
+            "booking_open_time": "12:00",
+            "booking_cutoff_time": "17:00",
+            "max_cancel_count": 3,
+            "booking_day_offset": -1
+        }
+    
+    return {
+        "booking_open_time": row["booking_open_time"].strftime("%H:%M") if row.get("booking_open_time") else "12:00",
+        "booking_cutoff_time": row["booking_cutoff_time"].strftime("%H:%M") if row.get("booking_cutoff_time") else "17:00",
+        "max_cancel_count": 3,
+        "booking_day_offset": -1
+    }
+
+@router.put("/booking-settings")
+async def update_booking_settings(
+    body: BookingSettingsUpdate,
+    admin: dict = Depends(require_admin),
+    db: Connection = Depends(get_db),
+):
+    """Updates the global booking window settings for all hostels."""
+    # Ensure there's at least one row in hostel_settings
+    exists = await db.fetchval("SELECT COUNT(*) FROM hostel_settings")
+    if exists == 0:
+        await db.execute("""
+            INSERT INTO hostel_settings (hostel_id, booking_open_time, booking_cutoff_time)
+            VALUES (1, $1, $2)
+        """, body.booking_open_time, body.booking_cutoff_time)
+    else:
+        await db.execute("""
+            UPDATE hostel_settings 
+            SET booking_open_time = $1, 
+                booking_cutoff_time = $2
+        """, body.booking_open_time, body.booking_cutoff_time)
+
+    # Also update meal_slots to keep it somewhat in sync (if needed)
+    await db.execute("""
+        UPDATE meal_slots 
+        SET booking_open_time = $1, 
+            booking_cutoff_time = $2
+    """, body.booking_open_time, body.booking_cutoff_time)
+
+    return {"message": "Booking settings updated successfully"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

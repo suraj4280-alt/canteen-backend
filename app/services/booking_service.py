@@ -12,15 +12,18 @@ async def check_booking_window(db: Connection, meal_date: date, slot_id: int) ->
       - window_close: datetime-like description
     """
     slot = await db.fetchrow("""
-        SELECT name, start_time, end_time, 
-               booking_open_time, booking_open_day_offset, booking_cutoff_time
+        SELECT name, start_time, end_time, booking_open_day_offset
         FROM meal_slots WHERE id = $1
     """, slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Meal slot not found")
     
-    open_time = slot['booking_open_time']
-    close_time = slot['booking_cutoff_time']
+    settings = await db.fetchrow("SELECT booking_open_time, booking_cutoff_time FROM hostel_settings LIMIT 1")
+    if not settings:
+        raise HTTPException(status_code=500, detail="Booking settings not configured")
+        
+    open_time = settings['booking_open_time']
+    close_time = settings['booking_cutoff_time']
     day_offset = slot['booking_open_day_offset'] or 0  # -1 = prev day, 0 = same day
     
     today = date.today()
@@ -107,16 +110,19 @@ async def is_cancel_cutoff_passed(db: Connection, meal_date: date, slot_id: int,
     """Cancel cutoff uses the same window logic as booking cutoff.
     Uses cancel_cutoff_time if set, otherwise falls back to booking_cutoff_time."""
     slot = await db.fetchrow("""
-        SELECT cancel_cutoff_time, booking_cutoff_time, 
-               booking_open_time, booking_open_day_offset
+        SELECT cancel_cutoff_time, booking_open_day_offset
         FROM meal_slots WHERE id = $1
     """, slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Meal slot not found")
+        
+    settings = await db.fetchrow("SELECT booking_open_time, booking_cutoff_time FROM hostel_settings LIMIT 1")
+    if not settings:
+        raise HTTPException(status_code=500, detail="Booking settings not configured")
     
-    # Use cancel_cutoff_time if set, otherwise fall back to booking_cutoff_time
-    close_time = slot['cancel_cutoff_time'] or slot['booking_cutoff_time']
-    open_time = slot['booking_open_time']
+    # Use cancel_cutoff_time if set, otherwise fall back to global booking_cutoff_time
+    close_time = slot['cancel_cutoff_time'] or settings['booking_cutoff_time']
+    open_time = settings['booking_open_time']
     day_offset = slot['booking_open_day_offset'] or 0
     
     today = date.today()

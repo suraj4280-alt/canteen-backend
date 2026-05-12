@@ -11,7 +11,16 @@ router = APIRouter(prefix="/api/meals", tags=["meals"])
 @router.get("/slots", response_model=List[MealSlotResp])
 async def get_slots(db: Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
     slots = await db.fetch("SELECT * FROM meal_slots WHERE is_active = TRUE ORDER BY display_order")
-    return [dict(s) for s in slots]
+    settings = await db.fetchrow("SELECT booking_open_time, booking_cutoff_time FROM hostel_settings LIMIT 1")
+    
+    result = []
+    for s in slots:
+        slot_dict = dict(s)
+        if settings:
+            slot_dict['booking_open_time'] = settings['booking_open_time']
+            slot_dict['booking_cutoff_time'] = settings['booking_cutoff_time']
+        result.append(slot_dict)
+    return result
 
 @router.get("/menu", response_model=MealMenuResp)
 async def get_menu(date: date, slot_id: int, db: Connection = Depends(get_db), student: dict = Depends(get_current_student)):
@@ -67,9 +76,11 @@ async def get_today(db: Connection = Depends(get_db), current_user: dict = Depen
     from datetime import timedelta
     today = now.date()
     
+    settings = await db.fetchrow("SELECT booking_open_time, booking_cutoff_time FROM hostel_settings LIMIT 1")
+    
     for slot in slots:
-        open_time = slot.get('booking_open_time')
-        close_time = slot['booking_cutoff_time']
+        open_time = settings['booking_open_time'] if settings else slot.get('booking_open_time')
+        close_time = settings['booking_cutoff_time'] if settings else slot['booking_cutoff_time']
         day_offset = slot.get('booking_open_day_offset', 0) or 0
         
         if open_time is None:
