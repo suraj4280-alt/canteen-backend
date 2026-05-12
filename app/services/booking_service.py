@@ -198,3 +198,30 @@ async def check_duplicate_booking(db: Connection, student_id: int, slot_id: int,
     
     if existing:
         raise HTTPException(status_code=400, detail="Active booking already exists for this slot and date")
+
+
+MAX_CANCEL_COUNT = 3
+
+async def check_cancel_limit(db: Connection, student_id: int, slot_id: int, target_date: date) -> None:
+    """Block re-booking if student has cancelled this slot 3+ times on this date."""
+    row = await db.fetchrow("""
+        SELECT cancel_count FROM bookings
+        WHERE student_id = $1 AND meal_slot_id = $2 AND date = $3
+    """, student_id, slot_id, target_date)
+    
+    if row and row['cancel_count'] >= MAX_CANCEL_COUNT:
+        raise HTTPException(
+            status_code=400,
+            detail="You have reached the maximum cancellation limit for this meal. Booking is no longer available for this slot."
+        )
+
+
+async def increment_cancel_count(db: Connection, booking_id: int) -> int:
+    """Increment cancel_count for a booking and return the new count."""
+    new_count = await db.fetchval("""
+        UPDATE bookings 
+        SET cancel_count = COALESCE(cancel_count, 0) + 1
+        WHERE id = $1
+        RETURNING cancel_count
+    """, booking_id)
+    return new_count or 0

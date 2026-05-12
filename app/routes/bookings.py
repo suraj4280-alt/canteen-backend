@@ -6,7 +6,8 @@ from datetime import datetime, date as date_type
 from app.schemas.bookings import BookingReq, SkipReq, BookingResp, MsgResp, QRResp, PaginatedBookingsResp, UpcomingBookingResp
 from app.services.booking_service import (
     is_cutoff_passed, is_cancel_cutoff_passed, validate_menu_items,
-    find_or_create_meal_menu, check_duplicate_booking, check_booking_window
+    find_or_create_meal_menu, check_duplicate_booking, check_booking_window,
+    check_cancel_limit, increment_cancel_count, MAX_CANCEL_COUNT
 )
 
 router = APIRouter(prefix="/api/bookings", tags=["bookings"])
@@ -123,6 +124,9 @@ async def create_booking(request: BookingReq, db: Connection = Depends(get_db), 
     window = await check_booking_window(db, request.date, request.slot_id)
     if not window["allowed"]:
         raise HTTPException(status_code=400, detail=window["reason"])
+    
+    # Check if student has exceeded cancellation limit for this slot/date
+    await check_cancel_limit(db, student_id, request.slot_id, request.date)
         
     await check_duplicate_booking(db, student_id, request.slot_id, request.date)
     
@@ -283,13 +287,30 @@ async def cancel_booking(id: int, db: Connection = Depends(get_db), student: dic
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
     
-    # Use cancel-specific cutoff (falls back to booking cutoff if not set)
-    if await is_cancel_cutoff_passed(db, booking['date'], booking['meal_slot_id'], hostel_id):
-        raise HTTPException(status_code=400, detail="Cannot cancel after cancellation cutoff time")
+    # Check booking window for cancellation too (same 12 PM - 5 PM window)
+    window = await check_booking_window(db, booking['date'], booking['meal_slot_id'])
+    if not window["allowed"]:
+        raise HTTPException(status_code=400, detail=window["reason"])
+    
+    # Check current cancel count before allowing
+    current_count = booking.get('cancel_count', 0) or 0
+    if current_count >= MAX_CANCEL_COUNT:
+        raise HTTPException(
+            status_code=400, 
+            detail="You have reached the maximum cancellation limit for this meal. Booking is no longer available for this slot."
+        )
         
     status_id = await db.fetchval("SELECT id FROM booking_status WHERE status_name = 'cancelled'")
     await db.execute("UPDATE bookings SET status_id = $1 WHERE id = $2", status_id, id)
-    return MsgResp(message="Booking cancelled successfully")
+    
+    # Increment cancel count
+    new_count = await increment_cancel_count(db, id)
+    
+    remaining = MAX_CANCEL_COUNT - new_count
+    if remaining > 0:
+        return MsgResp(message=f"Booking cancelled. You have {remaining} cancellation(s) remaining for this slot.")
+    else:
+        return MsgResp(message="Booking cancelled. You have used all cancellations for this slot. You cannot re-book this meal.")
 
 @router.post("/{id}/skip", response_model=MsgResp)
 async def skip_booking(id: int, request: SkipReq, db: Connection = Depends(get_db), student: dict = Depends(get_current_student)):
